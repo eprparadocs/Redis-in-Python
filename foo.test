@@ -1,0 +1,32 @@
+import requests
+from base64 import b64encode
+from json import dumps
+
+# Set in common things...
+#
+GIT_URL='https://api.github.com'
+GIT_TOKEN='f54cbbfe732ed3bfed94bbbbfc76e160804fb889'
+GIT_OWNER='eprparadocs'
+GIT_REPO='Redis-in-Python'
+GIT_BRANCH='master'
+
+#commiter related
+GIT_MESSAGE='Testing it out'
+GIT_NAME='Chuck Wegrzyn'
+GIT_EMAIL='github@garbagedump.com'
+
+# File stuff
+GIT_IN_FILE='storefile.py'
+GIT_FILE_IN_REPO='foo.test'
+
+def storefile():
+    import pdb; pdb.set_trace()
+    url = '/'.join((GIT_URL,'repos',GIT_OWNER,GIT_REPO,'contents',GIT_FILE_IN_REPO))
+    auth = {'Authorization': 'token ' + GIT_TOKEN}
+    content = b64encode(open(GIT_IN_FILE).read().encode()).decode()
+    data = {'message':GIT_MESSAGE, 'committer':{'name':GIT_NAME, 'email':GIT_EMAIL}, 'content':content}
+    response = requests.put(url, headers=auth, json=data)
+    print( response.status_code )
+
+storefile()
+
