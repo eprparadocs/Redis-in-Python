@@ -1,0 +1,530 @@
+import base64
+import click
+import contextlib
+from fnmatch import fnmatch
+import jmespath
+import hashlib
+import logging
+import requests
+import pprint
+import copy
+
+
+log = logging.getLogger('c7n-git-ops')
+
+# The URLs to various GITHUB servers.
+#### Pick one!
+PUBLIC_API_URL = 'https://api.github.com'
+INTERNAL_API_URL = 'https://github.kdc.capitalone.com/api/v3'
+INTERNAL_GRAPHQL = 'https://github.kdc.capitalone.com/api/graphql'
+DEF_GITHUB_URL = INTERNAL_API_URL
+
+
+GET_REPOS = """
+query($organization: String!, $cursor: String) {
+  organization(login: $organization) {
+    repositories(first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}){
+      edges {
+        node {
+          name
+          url
+          createdAt
+        }
+      }
+      pageInfo {
+        endCursor
+        hasNextPage
+      }
+    }
+  }
+}
+"""
+
+
+# The set of functions that do the actual GITHUB work.
+#
+#   inner_get_file - get a file from the repo.
+#   inner_delete_file - delete a file in a repo.
+
+
+def inner_get_file(github_url, github_token, github_owner, github_repo, target, verbose):
+    url = '/'.join((github_url, 'repos', github_owner, github_repo, 'contents', target))
+    auth = {'Authorization': 'token ' + github_token,
+            'Accept': 'application/vnd.github.VERSION.object'
+           }
+    response = requests.get(url, headers=auth)
+    if response.status_code != 200:
+        raise ValueError("Github api error %s" % (
+            response.content.decode('utf8'),))
+    results = response.json()
+    if verbose:
+        pp = pprint.PrettyPrinter(indent=4)
+        pp.pprint(results)
+    return results
+
+
+def inner_delete_file(github_url, github_token, github_owner,
+                      github_branch, github_repo, target, verbose, message, address, user):
+
+    sha_of_file = inner_get_file(github_url, github_token, github_owner,
+                           github_repo, target, 0)['sha']
+    url = '/'.join((github_url, 'repos', github_owner, github_repo, 'contents', target))
+    auth = {'Authorization': 'token ' + github_token}
+    data = {'message':message,
+            'committer':{'name':user, 'email':address},
+            'sha':sha_of_file}
+    response = requests.delete(url, headers=auth, json=data)
+    results = response.json()
+    if response.status_code != 200 or 'errors' in results:
+        raise ValueError("Github api error %s" % (
+            response.content.decode('utf8'),))
+    if verbose:
+        print( response.status_code )
+
+    # We return the 200 for a good return
+    return response.status_code
+
+
+def inner_update_existing_file(github_url, github_token, github_owner, github_repo,
+                               github_branch, source, target, verbose,
+                               message, address, user):
+
+    # See if we have the original file or not. If so, we are doing a traditional
+    # update. Otherwise we are doing a new file store.
+    try:
+        sha_of_file = inner_get_file(github_url, github_token, github_owner,
+                               github_repo, target, 0)['sha']
+        url = '/'.join((github_url, 'repos',github_owner, github_repo, 'contents', target))
+        auth = {'Authorization': 'token ' + github_token}
+        file_contents = source.read()
+        content = base64.b64encode(file_contents).decode()
+        data = {'message':message,
+                'committer':{'name':user, 'email':address},
+                'content':content,
+                'sha':sha_of_file,
+                'branch': github_branch
+               }
+        response = requests.put(url, headers=auth, json=data)
+        results = response.json()
+        if response.status_code != 200 or 'errors' in results:
+            raise ValueError("Github api error %s" % (
+                response.content.decode('utf8'),))
+        if verbose:
+            print( response.status_code )
+        return response.status_code
+    except:
+        inner_store_new_file(github_url, github_token, github_owner, github_repo,
+                           github_branch, source, target, verbose, message, address, user )
+
+
+def inner_store_new_file(github_url, github_token, github_owner, github_repo,
+                   github_branch, source, target, verbose, message, address, user ):
+    url = '/'.join((github_url, 'repos', github_owner, github_repo, 'contents', target))
+    auth = {'Authorization': 'token ' + github_token}
+    content = base64.b64encode(source.read()).decode()
+    data = {'message':message,
+            'committer': {'name': user, 'email': address},
+            'content': content,
+            'branch': github_branch
+           }
+    response = requests.put(url, headers=auth, json=data)
+    results = response.json()
+    if response.status_code != 201 or 'errors' in results:
+        raise ValueError("Github api error %s" % (
+            response.content.decode('utf8'),))
+    if verbose:
+        print( response.status_code )
+
+    # We return 200 for a good return even thought Github
+    # gives us a 201!
+    return requests.codes.ok
+
+
+def inner_get_protection_status(github_url, github_token, github_branch,
+                github_owner, github_repo, verbose):
+    """Get protection status
+    """
+    # Generate the auth header for the all the requests.
+    headers = {"Authorization": "token {}".format(github_token)}
+
+    # Make sure branch protection is on for the repo. If not, we probably
+    # are some place we don't want to be....
+    url = '/'.join((github_url, 'repos', github_owner, github_repo,
+                    'branches', github_branch, 'protection'))
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200 :
+        raise ValueError("Github api error: %s" % (
+            response.content.decode('utf8'),))
+    results = response.json()
+    if verbose:
+        pp = pprint.PrettyPrinter(indent=4)
+        pp.pprint(results)
+    return results
+
+
+def inner_set_prot(github_url, github_token, github_owner, github_repo,
+                   github_branch, prot_data, verbose):
+    url = '/'.join((github_url, 'repos', github_owner, github_repo, 'branches', github_branch, 'protection'))
+    auth = {'Authorization': 'token ' + github_token}
+    response = requests.put(url, headers=auth, json=prot_data)
+    results = response.json()
+    if response.status_code != requests.codes.ok or 'errors' in results:
+        raise ValueError("Github api error %s" % (
+            response.content.decode('utf8'),))
+    if verbose:
+        print(response.status_code)
+    return response.status_code
+
+
+def inner_delete_prot(github_url, github_token, github_branch,
+                      github_owner, github_repo, verbose):
+    url = '/'.join((github_url, 'repos', github_owner, github_repo, 'branches', github_branch, 'protection'))
+    auth = {'Authorization': 'token ' + github_token}
+    response = requests.delete(url, headers=auth)
+    if response.status_code != 204:
+        raise ValueError("Github api error %s" % (
+            response.content.decode('utf8'),))
+    if verbose:
+        print(response.status_code)
+    return response.status_code
+
+
+# These are the publicly accessible command line options for various GITHUB commands
+@click.group()
+def cli():
+    """Git Ops for custodian"""
+
+
+@cli.command(name='get-file')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--target', help='Target file in repo.')
+@click.option('-v', '--verbose', help='Verbose output')
+def get_file(github_url, github_token, github_owner, github_repo, target, verbose):
+    return inner_get_file(github_url, github_token, github_owner,
+                          github_repo, target, verbose)
+
+
+@cli.command(name='delete-file')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('--message',  envvar='GITHUB_COMMIT_MESSAGE',
+              help='Commit message')
+@click.option('--address',  envvar='GITHUB_COMMIT_USER_ADDRESS',
+              help='Commit user address')
+@click.option('--user',  envvar='GITHUB_COMMIT_USER_NAME',
+              help='Commit user name')
+@click.option('--target', help='Target file in repo.')
+@click.option('-v', '--verbose', help='Verbose output')
+def delete_file(github_url, github_token, github_owner, github_branch,
+                github_repo, target, verbose, message, address, user ):
+    return inner_delete_file(github_url, github_token, github_owner,
+                            github_branch, github_repo, target, verbose,
+                            message, address, user )
+
+
+@cli.command(name='update-existing-file')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('--message',  envvar='GITHUB_COMMIT_MESSAGE',
+              help='Commit message')
+@click.option('--address',  envvar='GITHUB_COMMIT_USER_ADDRESS',
+              help='Commit user address')
+@click.option('--user',  envvar='GITHUB_COMMIT_USER_NAME',
+              help='Commit user name')
+@click.option('--source', type=click.File('rb'),
+              help='Source file')
+@click.option('--target', help='Target file in repo.')
+@click.option('-v', '--verbose', help='Verbose output')
+def update_existing_file(github_url, github_token, github_owner, github_repo,
+                         github_branch, source, target, verbose, message,
+                         address, user ):
+    return inner_update_existing_file(github_url, github_token, github_owner,
+                                     github_repo, github_branch, source, target, verbose,
+                                     message, address, user )
+
+
+@cli.command(name='store-new-file')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('--message',  envvar='GITHUB_COMMIT_MESSAGE',
+              help='Commit message')
+@click.option('--address',  envvar='GITHUB_COMMIT_USER_ADDRESS',
+              help='Commit user address')
+@click.option('--user',  envvar='GITHUB_COMMIT_USER_NAME',
+              help='Commit user name')
+@click.option('--source', type=click.File('rb'),
+              help='Source file')
+@click.option('--target', help='Target file in repo.')
+@click.option('-v', '--verbose', help="Verbose output")
+def store_new_file(github_url, github_token, github_owner, github_repo,
+                   github_branch, source, target, verbose, message, address, user ):
+    return inner_store_new_file(github_url, github_token, github_owner,
+                                github_repo, github_branch, source, target, verbose,
+                                message, address, user )
+
+
+@cli.command(name='get-protection')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('-v', '--verbose', help="Verbose output")
+def get_protection_status(github_url, github_token, github_branch,
+                github_owner, github_repo, verbose):
+
+    return inner_get_protection_status(github_url, github_token,
+                                      github_branch, github_owner,
+                                      github_repo, verbose)
+
+
+@cli.command(name='delete-protection')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('-v', '--verbose', help="Verbose output")
+def get_protection_status(github_url, github_token, github_branch,
+                github_owner, github_repo, verbose):
+
+    return inner_delete_prot(github_url, github_token,
+                                      github_branch, github_owner,
+                                      github_repo, verbose)
+
+
+@cli.command(name='set-protection')
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--github-repo', envvar='GITHUB_REPO',
+              help='Repo name')
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('-v', '--verbose', help="Verbose output")
+def set_prot(github_url, github_token, github_owner, github_repo,
+             github_branch, prot_data, verbose):
+    return inner_set_prot(github_url, github_token, github_owner, github_repo,
+             github_branch, prot_data, verbose)
+
+
+def process_prot_data(orig_prot):
+    """
+    Take the branch protection data taken from a get-protection
+    call and turn it into data that can be used by set-protection.
+    """
+    # Give us a copy of the source data
+    data = copy.copy(orig_prot)
+    for i in orig_prot.keys():
+        # Essentially we are removing all occurrences of data
+        # items that have names url and contexts_url. We also
+        # simplify the enforce_admins item.
+        if i == 'url':
+            del data[i]
+            continue
+        if i == 'enforce_admins':
+            data['enforce_admins'] = data['enforce_admins']['enabled']
+            continue
+        if 'url' in data[i]:
+            del data[i]['url']
+        if 'contexts_url' in data[i]:
+            del data[i]['contexts_url']
+
+    # See if we have all the fields we need...for those we don't, we set them
+    # to NULL.
+    if 'required_status_checks' not in data:
+        data['required_status_checks'] = None
+    if 'enforce_admins' not in data:
+        data['enfore_admins'] = False
+    if 'required_pull_request_reviews' not in data:
+        data['required_pull_request_reviews'] = None
+    if 'restrictions' not in data:
+        data['restrictions'] = None
+    return data
+
+
+def github_repos(organization, github_url, github_token):
+    """Return all github repositories in an organization."""
+    # Get github repos
+    headers = {"Authorization": "token {}".format(github_token)}
+    next_cursor = None
+
+    while next_cursor is not False:
+        params = {'query': GET_REPOS, 'variables': {
+            'organization': organization, 'cursor': next_cursor}}
+        response = requests.post(github_url, headers=headers, json=params)
+        result = response.json()
+        if response.status_code != 200 or 'errors' in result:
+            raise ValueError("Github api error %s" % (
+                response.content.decode('utf8'),))
+
+        repos = jmespath.search(
+            'data.organization.repositories.edges[].node', result)
+        for r in repos:
+            yield r
+        page_info = jmespath.search(
+            'data.organization.repositories.pageInfo', result)
+        if page_info:
+            next_cursor = (page_info['hasNextPage'] and
+                           page_info['endCursor'] or False)
+        else:
+            next_cursor = False
+
+
+def filtered_repos(repos, include, exclude):
+    for r in repos:
+        if include:
+            found = False
+
+            for f in include:
+                if fnmatch(r['name'], f):
+                    found = True
+                    break
+            if not found:
+                continue
+
+        if exclude:
+            found = False
+            for e in exclude:
+                if fnmatch(r['name'], e):
+                    found = True
+                    break
+            if found:
+                continue
+        yield r
+
+
+@cli.command(name='update-files')
+@click.option('--organization', envvar="GITHUB_ORG",
+              required=True, help="Github Organization")
+@click.option('--github-url', envvar="GITHUB_URL",
+              default=DEF_GITHUB_URL)
+@click.option('--github-token', envvar='GITHUB_TOKEN',
+              help="Github credential token")
+@click.option('--github-branch', envvar='GITHUB_BRANCH',
+              help="Github branch")
+@click.option('--github-owner', envvar='GITHUB_OWNER',
+              help="Github owner")
+@click.option('--message',  envvar='GITHUB_COMMIT_MESSAGE',
+              help='Commit message')
+@click.option('--address',  envvar='GITHUB_COMMIT_USER_ADDRESS',
+              help='Commit user address')
+@click.option('--user',  envvar='GITHUB_COMMIT_USER_NAME',
+              help='Commit user name')
+@click.option('--sha-of-original', envvar='COMMON_FILE_SHA', default=None,
+              help='SHA1 of file we are looking to replace')
+@click.option('--source', type=click.File('rb'))
+@click.option('--target')
+@click.option('-v', '--verbose', help="Verbose output")
+@click.option('-i', '--include', multiple=True)
+@click.option('-e', '--exclude', multiple=True)
+def update_files(organization, github_url, github_token, github_branch,
+                github_owner, include, exclude, verbose,
+                source, target, message, address, user, sha_of_original):
+    """Update files in a branch protected repository.
+    """
+    logging.basicConfig(level=verbose and logging.INFO or logging.DEBUG)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    for r in filtered_repos(
+            github_repos(organization, INTERNAL_GRAPHQL, github_token),
+            include, exclude):
+
+        try:
+            # Try getting branch protection ...it might fail if it isn't
+            # enabled.
+            branch_prot = inner_get_protection_status(github_url, github_token,
+                                                      github_branch, github_owner,
+                                                      r['name'], False)
+
+            # Create the protection data we will need to restore it.
+            restore_prot = process_prot_data(branch_prot)
+
+            # Delete the protection around the branch now; we will turn it back
+            # on later.
+            inner_delete_prot(github_url, github_token, github_branch,
+                                  github_owner, r['name'], verbose)
+        except :
+            # This indicates protection is not on and shouldn't be restored.
+            restore_prot = None
+
+        # Now upload the file to the repo but only if the file we are replacing
+        # has the correct SHA (if sha_of_original is !None)
+        if sha_of_original:
+            try:
+                sha_of_file_in_repo = inner_get_file(github_url,
+                                                     github_token, github_owner, r['name'],
+                                                     target, False)['sha']
+                if sha_of_original == sha_of_file_in_repo:
+                    inner_update_existing_file(github_url, github_token, github_owner,
+                                               r['name'], github_branch, source, target,
+                                               False, message, address, user)
+                else:
+                    print("Repo '%s' ignored - different file." % (r['name']))
+            except:
+                print("Repo '%s' ignored - doesn't contain target file." % (r['name']))
+        else:
+            # Just update the file...
+            inner_update_existing_file(github_url, github_token, github_owner,
+                                       r['name'], github_branch, source, target,
+                                       False, message, address, user)
+
+        # Do we need to restore branch protection?
+        if restore_prot:
+            inner_set_prot(github_url, github_token, github_owner, r['name'],
+                          github_branch, restore_prot, False)
+
+def list_prs(include, exclude):
+    """Show open pull requests on repos
+    """
+
+
+if __name__ == '__main__':
+    cli()
+
+
+
+
