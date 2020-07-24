@@ -42,12 +42,12 @@ def Dumper(server):
     # Finished.
     logging.debug("Dumper: stopped.")
 
-def slaveDriver(server):
+def subordinateDriver(server):
     """
     This thread is responsible for writing all changes to the database to other servers
     in the system.
     """
-    logging.debug("slaveDriver: thread starting.")
+    logging.debug("subordinateDriver: thread starting.")
 
     # Don't halt until the queue of updates is pushed out to the other servers...
     while not (server.halting and server.queue.empty()):
@@ -62,7 +62,7 @@ def slaveDriver(server):
             pass
 
     # All done!
-    logging.debug("slaveDriver: stopped.")
+    logging.debug("subordinateDriver: stopped.")
 
 def TimerTask(server):
     """
@@ -123,7 +123,7 @@ class server(asyncore.dispatcher):
     # to dump the database to backing store.
     mark = 0
 
-    def __init__(self, ip="localhost:6379",initfile="MDB.TXT",dbfile="TSnosql-rdump.db",master=True):
+    def __init__(self, ip="localhost:6379",initfile="MDB.TXT",dbfile="TSnosql-rdump.db",main=True):
 
         # Initialize the class that makes this object work.
         asyncore.dispatcher.__init__(self)
@@ -132,8 +132,8 @@ class server(asyncore.dispatcher):
         self.db = DB(dbfile)
         self.mark = self.db.totalChangeOperations
 
-        # Remember if we assume master or slave operation
-        self.master = master
+        # Remember if we assume main or subordinate operation
+        self.main = main
 
         # See if the dump database file works. If so, we will use it. If not, we will
         # create a clean database and initialize it, if that file exists.
@@ -152,8 +152,8 @@ class server(asyncore.dispatcher):
             logging.debug("server.__init__: Created empty cache database")
             self.db.saveToDump()
 
-        # Start the background slave queueing support...
-        queThread = threading.Thread(target=slaveDriver,name="slaveDriver",args=(self,))
+        # Start the background subordinate queueing support...
+        queThread = threading.Thread(target=subordinateDriver,name="subordinateDriver",args=(self,))
         queThread.daemon = True
         queThread.start()
 
@@ -263,7 +263,7 @@ class server(asyncore.dispatcher):
                 # Send out the command to the other side...the 'cmd' is
                 # a list of the format: [whichdb,cmd,arg1,arg2,...]
                 #
-                # Get the connection object to the slave
+                # Get the connection object to the subordinate
                 c = self.remoteList[i]
 
                 # Issue the command to the "other side"...we pickle it and
@@ -284,12 +284,12 @@ class server(asyncore.dispatcher):
             except Exception,e:
                 #TODO: We can get a few types of exceptions here. One is related to the
                 #Comm. channel breaking down. Another is lose of synchronization between
-                #us and the slave.
+                #us and the subordinate.
 
                 # Something happened with the connection or the server. So inform
                 # the operator letting them know.
                 logging.exception(e)
-                logging.log(logging.CRITICAL,"Failure in TSnosql slave - IP %s" % (i[0]))
+                logging.log(logging.CRITICAL,"Failure in TSnosql subordinate - IP %s" % (i[0]))
                 c.disconnect()
                 del c
                 del self.remoteList[i]
@@ -308,9 +308,9 @@ class server(asyncore.dispatcher):
             pass
         return rc
 
-    def anySlave(self):
+    def anySubordinate(self):
         """
-        See if there is any connection to any slave.
+        See if there is any connection to any subordinate.
         """
         return True if len(self.remoteList) > 0 else False
 
@@ -323,7 +323,7 @@ class server(asyncore.dispatcher):
 
     def version(self,host,port,version):
         """
-        Save the version of the database in the slave.
+        Save the version of the database in the subordinate.
         """
         self.remoteVersion[host,port] = version
 

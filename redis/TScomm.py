@@ -15,13 +15,13 @@ import socket
 
 from TSexcept import ConnectionError, InvalidResponse, ResponseError
 
-# Class to handle restricted communication with a slave server.
+# Class to handle restricted communication with a subordinate server.
 #
 # This class contains only the functions necessary to communicate 
-# with a slave. This includes __init__(), ping(), write(), get_response(),
+# with a subordinate. This includes __init__(), ping(), write(), get_response(),
 # connect() and disconnect().
 #
-class SlaveComm:
+class SubordinateComm:
     def __init__(self, host=None, port=None, timeout=None):
         self.host = host or 'localhost'
         self.port = port or 6400

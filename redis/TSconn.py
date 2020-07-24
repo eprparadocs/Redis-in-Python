@@ -27,7 +27,7 @@ class PyNoSql(asyncore.dispatcher):
         self.output = None
         self.server = server
         self.closeFlag = False
-        self.master = server.master
+        self.main = server.main
 
         # select the 0th database as default.
         self.whichdb = "0"
@@ -417,7 +417,7 @@ class PyNoSql(asyncore.dispatcher):
     def infoFunc(self,parts):
         tO,tcO,ls,v,NCC,NTC,st = self.server.getStats()
         dt = time.time() - st
-        s = """version:%s\r\nconnected_clients:%d\r\nconnected_slaves:%d\r\nused_memory:%d\r\nchanges_since_last_save:%d\r\nlast_save_time:%d\r\ntotal_connections_received:%d\r\ntotal_commands_processed:%d\r\nuptime_in_seconds:%d\r\nuptime_in_days:%d\r\nbgsave_in_progress:1\r\nrole:master""" % (v,
+        s = """version:%s\r\nconnected_clients:%d\r\nconnected_subordinates:%d\r\nused_memory:%d\r\nchanges_since_last_save:%d\r\nlast_save_time:%d\r\ntotal_connections_received:%d\r\ntotal_commands_processed:%d\r\nuptime_in_seconds:%d\r\nuptime_in_days:%d\r\nbgsave_in_progress:1\r\nrole:main""" % (v,
                 NCC,0,0,tcO,ls,NTC,tO,dt,dt/(60*60*24))
         return "$%d\r\n" % len(s) + s
 
@@ -479,11 +479,11 @@ class PyNoSql(asyncore.dispatcher):
         # Return the result
         return ":%d" % rc
 
-    def slaveFunc(self,parts):
+    def subordinateFunc(self,parts):
         """
-            This function connects this server to a slave. Notice we don't check
-            to see if this is a master or a slave. A slave can connect to other
-            slaves via relaying of changes.
+            This function connects this server to a subordinate. Notice we don't check
+            to see if this is a main or a subordinate. A subordinate can connect to other
+            subordinates via relaying of changes.
 
             SLAVE <ip> <port>\r\n
 
@@ -494,10 +494,10 @@ class PyNoSql(asyncore.dispatcher):
         if self.server.isConnected(host,port) == 0:
             # Nope. So connect to it.
             try:
-                c = SlaveComm(host,int(port))
+                c = SubordinateComm(host,int(port))
                 self.server.remoteConnection(host,port,c)
 
-                # Send current database to slave.
+                # Send current database to subordinate.
                 version,contents = self.db.getdb()
                 c.replaceDB(version,contents)
 
@@ -957,8 +957,8 @@ class PyNoSql(asyncore.dispatcher):
 
     def replacedb(self,parts):
         # Replace the entire database from a pickled image. This is mostly
-        # for master-slave communications. A Master will send a copy of its
-        # current database to a slave.
+        # for main-subordinate communications. A Main will send a copy of its
+        # current database to a subordinate.
         vers = int(parts[0])
         self.db.replace(vers,parts[1])
         return "+OK"
@@ -1019,23 +1019,23 @@ class PyNoSql(asyncore.dispatcher):
         #
         # Meaning of q:
         #
-        #       If True, send command to slaved connected to this server
-        #       If False, don't send command to slaves connected to this server
+        #       If True, send command to subordinated connected to this server
+        #       If False, don't send command to subordinates connected to this server
         #
         # Specific meansings:
         #
-        #   in Master :   wdb = None, q = True       cmd executed against self.whichdb; queue cmd to slaves
-        #                 wdb = ...   q = True       cmd executed against wdb; queue cmd to slaves
+        #   in Main :   wdb = None, q = True       cmd executed against self.whichdb; queue cmd to subordinates
+        #                 wdb = ...   q = True       cmd executed against wdb; queue cmd to subordinates
         #
-        #   in Slave  :   wdb = ...   q = False      cmd executed in slave against wdb; don't push to slaves of slave
-        #                 wdb = ...   q = True       cmd executed in slave against wdb; pushed to slaves of slave
+        #   in Subordinate  :   wdb = ...   q = False      cmd executed in subordinate against wdb; don't push to subordinates of subordinate
+        #                 wdb = ...   q = True       cmd executed in subordinate against wdb; pushed to subordinates of subordinate
         #
-        # This implies that a Master can talk to N slaves, each of which can be connected to other slaves. Hence
+        # This implies that a Main can talk to N subordinates, each of which can be connected to other subordinates. Hence
         # a web like model.
         try:
             func = self.cmds[l[1][1]]
             logging.debug("Executing function %s with args = %s wdb = %s q = False" % (l[1][1],l[1][2:],l[1][0]))
-            rc = func(self,list(l[1][2:]),wdb=l[1][0],q=self.server.anySlave())
+            rc = func(self,list(l[1][2:]),wdb=l[1][0],q=self.server.anySubordinate())
         except Exception,e:
             # If there is no command, just ignore the operation.
             logging.exception(e)
@@ -1054,7 +1054,7 @@ class PyNoSql(asyncore.dispatcher):
                 "expire":expireFunc, "select":selectFunc, "info":infoFunc,
                 "move":moveFunc,"shutdown":shutFunc, "lastsave":lastFunc,
                 "auth":authFunc,"getset":getset, "ttl":ttlFunc,
-                "slave":slaveFunc,"lpush":lpush,"rpush":rpush, "llen":llen,
+                "subordinate":subordinateFunc,"lpush":lpush,"rpush":rpush, "llen":llen,
                 "ldel":delFunc, "lrange":lrange, "ltrim":ltrim, "lindex":lindex,
                 "lset":lset, "lrem":lrem, "lpop":lpop, "rpop":rpop,
                 "sadd":sadd, "scard":scard, "sismember":sismember,
@@ -1076,7 +1076,7 @@ class PyNoSql(asyncore.dispatcher):
                 "expire":2, "select":1, "info":0,
                 "move":2, "shutdown":0, "lastsave":0,
                 "auth":1, "getset":2, "ttl":1,
-                "slave":1,"lpush":2, "rpush":2,  "llen":1,
+                "subordinate":1,"lpush":2, "rpush":2,  "llen":1,
                 "ldel":1, "lrange":3, "ltrim":3, "lindex":2,
                 "lset":3, "lrem":3, "lpop":1, "rpop":1,
                 "sadd":2, "scard":1, "sismember":2, "smembers":1,
@@ -1085,12 +1085,12 @@ class PyNoSql(asyncore.dispatcher):
                 "smove":3, "randomkey":0, "sort":-1, "replacedb":2,
                 "version":0, "re":1 }
 
-    # In slave mode we allow ReplaceDB and Do along with any command
-    # that has value of 1. In master mode we allow them all.
+    # In subordinate mode we allow ReplaceDB and Do along with any command
+    # that has value of 1. In main mode we allow them all.
     #
     #   0   -> command modifies database
     #   1   -> command doesn't modify database
-    #  -1   -> special command allowed all the time (ReplaceDB,Slave,etc)
+    #  -1   -> special command allowed all the time (ReplaceDB,Subordinate,etc)
     #
     noMod = {"get":1,"set":0,"del":0,"keys":1,
                 "ping":1,"save":1,"incrby":0,
@@ -1102,7 +1102,7 @@ class PyNoSql(asyncore.dispatcher):
                 "expire":0, "select":1, "info":1,
                 "move":0, "shutdown":1, "lastsave":1,
                 "auth":0, "getset":0, "ttl":1,
-                "slave":-1, "lpush":0, "rpush":0, "llen":1,
+                "subordinate":-1, "lpush":0, "rpush":0, "llen":1,
                 "ldel":0, "lrange":1, "ltrim":0, "lindex":1,
                 "lset":0, "lrem":0, "lpop":0, "rpop":0,
                 "sadd":0, "scard":1, "sismember":1,
@@ -1132,7 +1132,7 @@ class PyNoSql(asyncore.dispatcher):
                 "expire":3, "select":3, "info":3,
                 "move":3, "shutdown":3, "lastsave":3,
                 "auth":3, "getset":0, "ttl":3,
-                "slave":3, "lpush":1, "rpush":1, "llen":11,
+                "subordinate":3, "lpush":1, "rpush":1, "llen":11,
                 "ldel":1, "lrange":1, "ltrim":11, "lindex":11,
                 "lset":11, "lrem":11, "lpop":1, "rpop":1,
                 "sadd":2, "scard":2, "sismember":2,
@@ -1181,10 +1181,10 @@ class PyNoSql(asyncore.dispatcher):
 
             # Figure out if we allow the operation to execute. If the operations is reading
             # something, we always allow it. If it is writing, we only allow this to happen
-            # on a server running in master mode and not terminating.
+            # on a server running in main mode and not terminating.
             modCmd = self.noMod[cmd]
-            if modCmd == 0 and not self.master :
-                raise ERR("-ERR server is operating in slave only mode; redirect to master")
+            if modCmd == 0 and not self.main :
+                raise ERR("-ERR server is operating in subordinate only mode; redirect to main")
             if modCmd == 0 and (self.server.halting or self.closeFlag) :
                 raise ERR("-ERR server shutting down and command not allowed.")
 

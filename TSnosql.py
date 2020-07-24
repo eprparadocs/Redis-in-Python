@@ -48,8 +48,8 @@ if __name__ == '__main__':
                         help="home directory for the Twisted services [default: %default]")
     parser.add_option("-n","--nosql",dest="redis",metavar="ip",
                         help="IP address and port of service [default: %default]")
-    parser.add_option("-m","--master", dest="master",action="store_true",
-                        help="indicates running as Master instead of Slave [default: %default]")
+    parser.add_option("-m","--main", dest="main",action="store_true",
+                        help="indicates running as Main instead of Subordinate [default: %default]")
     parser.add_option("-i","--initfile",dest="initfile",metavar="file",
                         help="init file [default: %default]")
     parser.add_option("-r","--rdump",dest="dbfile",metavar="file",
@@ -59,7 +59,7 @@ if __name__ == '__main__':
     parser.set_defaults(redis="localhost:6379")
     parser.set_defaults(debug=False)
     parser.set_defaults(homedir=".")
-    parser.set_defaults(master=False)
+    parser.set_defaults(main=False)
     (options, args) = parser.parse_args()
 
     # Logging, if necessary and make it look nice.
@@ -86,7 +86,7 @@ if __name__ == '__main__':
             server.updateCount = uc
 
     # Create the caching server
-    mserver = server(ip=options.redis,master=options.master,initfile=options.initfile,dbfile=options.dbfile)
+    mserver = server(ip=options.redis,main=options.main,initfile=options.initfile,dbfile=options.dbfile)
     mserver.ourIP = ourIP
 
     # Setup stuff for invoking log setup. We do this because if the TSnosql server fails we want
@@ -105,10 +105,10 @@ if __name__ == '__main__':
         dc.HostName = socket.gethostname()
     #log.setupLogging(dc)
 
-    logging.info("Twisted Storage nosql server started as %s on node %s." % ("master" if options.master else "slave", dc.HostName))
+    logging.info("Twisted Storage nosql server started as %s on node %s." % ("main" if options.main else "subordinate", dc.HostName))
     mserver.start()
 
-    # When we get here things are shutting down. We need to make sure the slaveDriver is all done before
+    # When we get here things are shutting down. We need to make sure the subordinateDriver is all done before
     # we exit. We don't worry about the timer task since we will get here if the server closed by itself
     # or because of the timer going off. 
     logging.info("Twisted Storage nosql server terminating.")

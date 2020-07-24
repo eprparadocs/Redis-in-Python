@@ -50,9 +50,9 @@ class nosql(object):
         In addition to the variables, TSnosql has a few other features.
         First, is the ability of the server to back up the contents of
         database to disk and recover them on restart. Secondly, this
-        initial release supports slave servers, all interlinked. This
-        means an update to the master will ripple through to all the
-        slaves. Finally, the "database" isn't just one big database: it
+        initial release supports subordinate servers, all interlinked. This
+        means an update to the main will ripple through to all the
+        subordinates. Finally, the "database" isn't just one big database: it
         is composed of many individual, and separately addressible
         databases. So you have the ability to store variables in
         any particular sub-database.
@@ -62,7 +62,7 @@ class nosql(object):
         better (it hasn't been tested on Python 3.0 yet).
 
         Future releases of TSnosql will include support for multi-
-        master mode as well as some extensions to the command set.
+        main mode as well as some extensions to the command set.
 
         There are four types of commands in the system:
 
@@ -96,7 +96,7 @@ class nosql(object):
                 - connect to the server
                 - disconnect from a server
                 - ping a server to see if it is alive
-                - connect a server (master or slave) to another slave
+                - connect a server (main or subordinate) to another subordinate
                 - return the version of the server
                 - return information about a server
                 - does a variable exist?
@@ -246,9 +246,9 @@ class nosql(object):
             self.lock.release()
         return rc
 
-    def slave(self,host,port):
+    def subordinate(self,host,port):
         """
-            Connect a slave server to this server.\r\n
+            Connect a subordinate server to this server.\r\n
             Protocol::
 
                     Client to server:   SLAVE <host> <port>\\r\\n
@@ -258,10 +258,10 @@ class nosql(object):
                                         -ERR <error message>\\r\\n
 
             @type host: string
-            @param host: FQDN or IP address of slave server
+            @param host: FQDN or IP address of subordinate server
 
             @type port: integer
-            @param port: port nunmber of slave server
+            @param port: port nunmber of subordinate server
 
             @rtype: string
             @return: OK if it worked
